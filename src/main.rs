@@ -198,29 +198,13 @@ fn render_text_bg_line(
     buf
 }
 
-fn convert_gba_to_pc_levels(gba: u8) -> u8 {
-    (gba as u16 * 255 / 31) as u8
-}
-
 fn copy_line(rgbx_pixels: &mut [u8], line: &[u8], pal: &[u8]) {
     assert_eq!(line.len(), 240);
     for i in 0..240 {
+        // GBA colors are already in the BGR555 format the texture needs, so we just need to convert
+        // from LE to native (if required).
         let pal_entry = LE::read_u16(&pal[line[i] as usize * 2..]);
-        let color_gba = (
-            bit!(pal_entry[0:4]) as u8,
-            bit!(pal_entry[5:9]) as u8,
-            bit!(pal_entry[10:14]) as u8,
-        );
-        let color_pc = (
-            convert_gba_to_pc_levels(color_gba.0) as u32,
-            convert_gba_to_pc_levels(color_gba.1) as u32,
-            convert_gba_to_pc_levels(color_gba.2) as u32,
-        );
-
-        NativeEndian::write_u32(
-            &mut rgbx_pixels[i * 4..],
-            color_pc.0 << 24 | color_pc.1 << 16 | color_pc.2 << 8 | 0xFF,
-        );
+        NativeEndian::write_u16(&mut rgbx_pixels[i * 2..], pal_entry);
     }
 }
 
@@ -249,7 +233,7 @@ fn main() -> Result<(), Box<Error>> {
 
     let texture_creator = canvas.texture_creator();
     let mut lcd_texture =
-        texture_creator.create_texture_streaming(PixelFormatEnum::RGBX8888, 240, 160)?;
+        texture_creator.create_texture_streaming(PixelFormatEnum::BGR555, 240, 160)?;
 
     let mut lcd_regs = LcdControllerRegs::new();
     lcd_regs.write(0x0400_0000, 0x0100);
