@@ -14,6 +14,7 @@ use sdl2::render::Texture;
 use std::error::Error;
 use std::fs::File;
 use std::io::Read;
+use std::mem;
 
 fn load_file(filename: &str, expected_size: usize) -> Result<Vec<u8>, Box<Error>> {
     let mut file = File::open(filename)?;
@@ -147,7 +148,8 @@ fn render_text_bg_line(
     bg: usize,
     regs: &LcdControllerRegs,
     vram: &[u8],
-) -> [u8; 240] {
+    pals: &[u16],
+) -> [u16; 240] {
     let mut buf = [0; 240];
 
     let bg_regs = &regs.bg_attributes[bg];
@@ -193,36 +195,42 @@ fn render_text_bg_line(
         }
         pixel &= 0xF;
 
-        buf[screen_x as usize] = pixel as u8;
+        let sub_pal = &pals[pal_id as usize * 16..][..16];
+        buf[screen_x as usize] = sub_pal[pixel as usize];
     }
 
     buf
 }
 
-fn copy_line(rgbx_pixels: &mut [u8], line: &[u8], pal: &[u8]) {
+fn copy_line(rgbx_pixels: &mut [u8], line: &[u16]) {
     assert_eq!(line.len(), 240);
     for i in 0..240 {
-        // GBA colors are already in the BGR555 format the texture needs, so we just need to convert
-        // from LE to native (if required).
-        let pal_entry = LE::read_u16(&pal[line[i] as usize * 2..]);
-        NativeEndian::write_u16(&mut rgbx_pixels[i * 2..], pal_entry);
+        // GBA colors are already in the BGR555 format the texture needs, so there's no conversion
+        // needed.
+        NativeEndian::write_u16(&mut rgbx_pixels[i * 2..], line[i]);
     }
 }
 
-fn draw_screen(texture: &mut Texture, regs: &LcdControllerRegs, vram: &[u8], pals: &[u8]) {
+fn draw_screen(texture: &mut Texture, regs: &LcdControllerRegs, vram: &[u8], pals: &[u16]) {
     texture
         .with_lock(None, |pixels: &mut [u8], stride| {
             for screen_y in 0..160 {
-                let line_buf = render_text_bg_line(screen_y as u16, 0, regs, vram);
+                let bg_pals = &pals[..16 * 16];
+                let line_buf = render_text_bg_line(screen_y as u16, 0, regs, vram, bg_pals);
                 let line_offset = screen_y * stride;
-                copy_line(
-                    &mut pixels[line_offset..line_offset + stride],
-                    &line_buf,
-                    &pals[32 * 3..32 * 4],
-                );
+                copy_line(&mut pixels[line_offset..line_offset + stride], &line_buf);
             }
         })
         .unwrap();
+}
+
+fn convert_to_u16_vec(src: &[u8]) -> Vec<u16> {
+    let sizeof = mem::size_of::<u16>();
+    assert_eq!(src.len() % sizeof, 0);
+
+    let mut new_vec = vec![0u16; src.len() / sizeof];
+    LE::read_u16_into(src.as_ref(), new_vec.as_mut());
+    new_vec
 }
 
 fn main() -> Result<(), Box<Error>> {
@@ -245,7 +253,7 @@ fn main() -> Result<(), Box<Error>> {
     let mut bgx = 0xC0;
     let mut bgy = 0x40;
 
-    let pal_mem = load_file("brin-pal.bin", 1024)?;
+    let pal_mem = convert_to_u16_vec(load_file("brin-pal.bin", 1024)?.as_ref());
     let vram_mem = load_file("brin-vram.bin", 96 * 1024)?;
 
     assert_eq!(lcd_regs.video_mode, 0);
