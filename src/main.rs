@@ -29,7 +29,7 @@ fn load_file(filename: &str, expected_size: usize) -> Result<Vec<u8>, Box<Error>
 }
 
 #[derive(Copy, Clone, Debug, PartialEq)]
-enum BgColorMode {
+enum BgPaletteMode {
     Pal16,
     Pal256,
 }
@@ -40,7 +40,7 @@ const NUM_BG_LAYERS: usize = 4;
 struct BgAttributes {
     priority: u8,  // 0-3
     char_base: u8, // 0-3, units of 16 KB
-    color_mode: BgColorMode,
+    palette_mode: BgPaletteMode,
     map_base: u8,  // 0-31, units of 2 KB
     size_mode: u8, // 0-3, see table in GBATEK
     x_scroll: u16, // 0-511
@@ -52,7 +52,7 @@ impl BgAttributes {
         BgAttributes {
             priority: 0,
             char_base: 0,
-            color_mode: BgColorMode::Pal16,
+            palette_mode: BgPaletteMode::Pal16,
             map_base: 0,
             size_mode: 0,
             x_scroll: 0,
@@ -125,9 +125,9 @@ impl LcdControllerRegs {
         let bg = &mut self.bg_attributes[i];
         bg.priority = bit!(data[0:1]) as u8;
         bg.char_base = bit!(data[2:3]) as u8;
-        bg.color_mode = match bit!(data[7]) {
-            0 => BgColorMode::Pal16,
-            1 => BgColorMode::Pal256,
+        bg.palette_mode = match bit!(data[7]) {
+            0 => BgPaletteMode::Pal16,
+            1 => BgPaletteMode::Pal256,
             _ => unreachable!(),
         };
         bg.map_base = bit!(data[8:12]) as u8;
@@ -152,49 +152,51 @@ fn render_text_bg_pixel(
     pals: &[u16],
 ) -> u16 {
     let bg_regs = &regs.bg_attributes[bg];
-    assert_eq!(bg_regs.color_mode, BgColorMode::Pal16);
 
-    let character_base = bg_regs.char_base as usize * 0x4000;
+    // Calculate tile and background coordinates
+    fn calc_bg_coords(screen_y: u16, bg_y_scroll: u16) -> (usize, usize, usize) {
+        let bg_y = screen_y.wrapping_add(bg_y_scroll) % 512;
+        let tile_y = bg_y % 8;
+        let map_y = bg_y / 8 % 32;
+        let submap_y = bg_y / 8 / 32;
+        (tile_y as usize, map_y as usize, submap_y as usize)
+    }
+    let (tile_x, map_x, submap_x) = calc_bg_coords(screen_x, bg_regs.x_scroll);
+    let (tile_y, map_y, submap_y) = calc_bg_coords(screen_y, bg_regs.y_scroll);
 
-    let bg_y = screen_y.wrapping_add(bg_regs.y_scroll);
-    let map_y = bg_y / 8 % 32;
-    let submap_y = bg_y / 8 / 32 % 2;
-    let tile_y = (bg_y % 8) as usize;
-
-    let bg_x = screen_x.wrapping_add(bg_regs.x_scroll);
-    let map_x = bg_x / 8 % 32;
-    let submap_x = bg_x / 8 / 32 % 2;
-    let tile_x = (bg_x % 8) as usize;
-
-    let submap = match bg_regs.size_mode {
+    // Calculate map base/screenblock and offset
+    let screenblock_offset = match bg_regs.size_mode {
         0 => 0,
         1 => submap_x,
         2 => submap_y,
         3 => submap_y * 2 + submap_x,
         _ => unreachable!(),
-    } as usize;
+    };
+    assert!(screenblock_offset < 4);
 
-    let map_base = (bg_regs.map_base as usize + submap) % 32 * 0x800;
-    let map_offset = map_y as usize * (256 / 8) + map_x as usize;
-    let entry = LE::read_u16(&vram[map_base + map_offset * 2..]);
+    let screenblock_base = (bg_regs.map_base as usize + screenblock_offset) * 0x800;
+    let screenblock_offset = map_y * 32 + map_x;
 
+    // Read map entry from VRAM
+    let entry = LE::read_u16(&vram[screenblock_base + screenblock_offset * 2..]);
     let tile_id = bit!(entry[0:9]) as usize;
     let h_flip = bit!(entry[10]) != 0;
     let v_flip = bit!(entry[11]) != 0;
     let pal_id = bit!(entry[12:15]);
 
+    // Calculate character data offset
     let flipped_tile_x = if h_flip { 7 - tile_x } else { tile_x };
     let flipped_tile_y = if v_flip { 7 - tile_y } else { tile_y };
+    let charmap_base = bg_regs.char_base as usize * 0x4000;
+    let charmap_offset = tile_id * (8 * 8) + (flipped_tile_y * 8) + flipped_tile_x;
 
-    let mut pixel =
-        vram[character_base + (tile_id * (8 * 8) + (flipped_tile_y * 8) + flipped_tile_x) / 2];
-    if tile_x % 2 != 0 {
-        pixel >>= 4;
-    }
-    pixel &= 0xF;
+    // Read pixel data and compute palette index
+    assert_eq!(bg_regs.palette_mode, BgPaletteMode::Pal16);
+    let read_byte = vram[charmap_base + charmap_offset / 2];
+    let pixel = read_byte >> (flipped_tile_x % 2 * 4) & 0xF;
+    let palette_index = pixel as usize + (pal_id as usize * 16);
 
-    let sub_pal = &pals[pal_id as usize * 16..][..16];
-    sub_pal[pixel as usize]
+    pals[palette_index as usize]
 }
 
 fn render_text_bg_line(
