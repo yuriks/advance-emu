@@ -158,14 +158,14 @@ fn render_text_bg_line(
     let character_base = bg_regs.char_base as usize * 0x4000;
 
     let bg_y = screen_y.wrapping_add(bg_regs.y_scroll);
-    let map_y = bg_y % 256 / 8;
-    let submap_y = bg_y / 256 % 2;
+    let map_y = bg_y / 8 % 32;
+    let submap_y = bg_y / 8 / 32 % 2;
     let tile_y = (bg_y % 8) as usize;
 
     for screen_x in 0..240u16 {
         let bg_x = screen_x.wrapping_add(bg_regs.x_scroll);
-        let map_x = bg_x % 256 / 8;
-        let submap_x = bg_x / 256 % 2;
+        let map_x = bg_x / 8 % 32;
+        let submap_x = bg_x / 8 / 32 % 2;
         let tile_x = (bg_x % 8) as usize;
 
         let submap = match bg_regs.size_mode {
