@@ -186,7 +186,8 @@ fn render_text_bg_line(
         let flipped_tile_x = if h_flip { 7 - tile_x } else { tile_x };
         let flipped_tile_y = if v_flip { 7 - tile_y } else { tile_y };
 
-        let mut pixel = vram[(tile_id * (8 * 8) + (flipped_tile_y * 8) + flipped_tile_x) / 2];
+        let mut pixel =
+            vram[character_base + (tile_id * (8 * 8) + (flipped_tile_y * 8) + flipped_tile_x) / 2];
         if tile_x % 2 != 0 {
             pixel >>= 4;
         }
