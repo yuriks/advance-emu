@@ -143,15 +143,14 @@ impl LcdControllerRegs {
     }
 }
 
-fn render_text_bg_line(
+fn render_text_bg_pixel(
     screen_y: u16,
+    screen_x: u16,
     bg: usize,
     regs: &LcdControllerRegs,
     vram: &[u8],
     pals: &[u16],
-) -> [u16; 240] {
-    let mut buf = [0; 240];
-
+) -> u16 {
     let bg_regs = &regs.bg_attributes[bg];
     assert_eq!(bg_regs.color_mode, BgColorMode::Pal16);
 
@@ -162,43 +161,53 @@ fn render_text_bg_line(
     let submap_y = bg_y / 8 / 32 % 2;
     let tile_y = (bg_y % 8) as usize;
 
-    for screen_x in 0..240u16 {
-        let bg_x = screen_x.wrapping_add(bg_regs.x_scroll);
-        let map_x = bg_x / 8 % 32;
-        let submap_x = bg_x / 8 / 32 % 2;
-        let tile_x = (bg_x % 8) as usize;
+    let bg_x = screen_x.wrapping_add(bg_regs.x_scroll);
+    let map_x = bg_x / 8 % 32;
+    let submap_x = bg_x / 8 / 32 % 2;
+    let tile_x = (bg_x % 8) as usize;
 
-        let submap = match bg_regs.size_mode {
-            0 => 0,
-            1 => submap_x,
-            2 => submap_y,
-            3 => submap_y * 2 + submap_x,
-            _ => unreachable!(),
-        } as usize;
+    let submap = match bg_regs.size_mode {
+        0 => 0,
+        1 => submap_x,
+        2 => submap_y,
+        3 => submap_y * 2 + submap_x,
+        _ => unreachable!(),
+    } as usize;
 
-        let map_base = (bg_regs.map_base as usize + submap) % 32 * 0x800;
-        let map_offset = map_y as usize * (256 / 8) + map_x as usize;
-        let entry = LE::read_u16(&vram[map_base + map_offset * 2..]);
+    let map_base = (bg_regs.map_base as usize + submap) % 32 * 0x800;
+    let map_offset = map_y as usize * (256 / 8) + map_x as usize;
+    let entry = LE::read_u16(&vram[map_base + map_offset * 2..]);
 
-        let tile_id = bit!(entry[0:9]) as usize;
-        let h_flip = bit!(entry[10]) != 0;
-        let v_flip = bit!(entry[11]) != 0;
-        let pal_id = bit!(entry[12:15]);
+    let tile_id = bit!(entry[0:9]) as usize;
+    let h_flip = bit!(entry[10]) != 0;
+    let v_flip = bit!(entry[11]) != 0;
+    let pal_id = bit!(entry[12:15]);
 
-        let flipped_tile_x = if h_flip { 7 - tile_x } else { tile_x };
-        let flipped_tile_y = if v_flip { 7 - tile_y } else { tile_y };
+    let flipped_tile_x = if h_flip { 7 - tile_x } else { tile_x };
+    let flipped_tile_y = if v_flip { 7 - tile_y } else { tile_y };
 
-        let mut pixel =
-            vram[character_base + (tile_id * (8 * 8) + (flipped_tile_y * 8) + flipped_tile_x) / 2];
-        if tile_x % 2 != 0 {
-            pixel >>= 4;
-        }
-        pixel &= 0xF;
-
-        let sub_pal = &pals[pal_id as usize * 16..][..16];
-        buf[screen_x as usize] = sub_pal[pixel as usize];
+    let mut pixel =
+        vram[character_base + (tile_id * (8 * 8) + (flipped_tile_y * 8) + flipped_tile_x) / 2];
+    if tile_x % 2 != 0 {
+        pixel >>= 4;
     }
+    pixel &= 0xF;
 
+    let sub_pal = &pals[pal_id as usize * 16..][..16];
+    sub_pal[pixel as usize]
+}
+
+fn render_text_bg_line(
+    screen_y: u16,
+    bg: usize,
+    regs: &LcdControllerRegs,
+    vram: &[u8],
+    pals: &[u16],
+) -> [u16; 240] {
+    let mut buf = [0; 240];
+    for screen_x in 0..240u16 {
+        buf[screen_x as usize] = render_text_bg_pixel(screen_y, screen_x, bg, regs, vram, pals);
+    }
     buf
 }
 
