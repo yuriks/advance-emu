@@ -1,0 +1,9 @@
+[package]
+name = "advance"
+version = "0.1.0"
+authors = ["Yuri Kunde Schlesner <yuriks@yuriks.net>"]
+
+[dependencies]
+sdl2 = "0.31.0"
+num = "0.2.0"
+byteorder = "1.2.6"
