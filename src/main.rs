@@ -146,13 +146,11 @@ impl LcdControllerRegs {
 fn render_text_bg_pixel(
     screen_y: u16,
     screen_x: u16,
-    bg: usize,
-    regs: &LcdControllerRegs,
+    bg_id: u8,
+    bg_regs: &BgAttributes,
     vram: &[u8],
     pals: &[u16],
-) -> u16 {
-    let bg_regs = &regs.bg_attributes[bg];
-
+) -> Option<Layer> {
     // Calculate tile and background coordinates
     fn calc_bg_coords(screen_y: u16, bg_y_scroll: u16) -> (usize, usize, usize) {
         let bg_y = screen_y.wrapping_add(bg_y_scroll) % 512;
@@ -191,24 +189,113 @@ fn render_text_bg_pixel(
     let charmap_offset = tile_id * (8 * 8) + (flipped_tile_y * 8) + flipped_tile_x;
 
     // Read pixel data and compute palette index
-    assert_eq!(bg_regs.palette_mode, BgPaletteMode::Pal16);
-    let read_byte = vram[charmap_base + charmap_offset / 2];
-    let pixel = read_byte >> (flipped_tile_x % 2 * 4) & 0xF;
-    let palette_index = pixel as usize + (pal_id as usize * 16);
+    let palette_index;
+    let opaque;
+    match bg_regs.palette_mode {
+        BgPaletteMode::Pal16 => {
+            let read_byte = vram[charmap_base + charmap_offset / 2];
+            let pixel = read_byte >> (flipped_tile_x % 2 * 4) & 0xF;
+            palette_index = pixel + (pal_id * 16) as u8;
+            opaque = pixel != 0;
+        }
+        BgPaletteMode::Pal256 => {
+            palette_index = vram[charmap_base + charmap_offset];
+            opaque = palette_index != 0;
+        }
+    }
 
-    pals[palette_index as usize]
+    // Read palette entry
+    let color = pals[palette_index as usize];
+
+    if opaque {
+        Some(Layer {
+            id: LayerId::Bg(bg_id),
+            color,
+            priority: bg_regs.priority,
+            force_alpha: false,
+        })
+    } else {
+        None
+    }
 }
 
-fn render_text_bg_line(
+fn pick_top_two<T: Copy, K: Ord>(
+    mut v: impl Iterator<Item = T>,
+    key_fn: impl Fn(&T) -> K,
+) -> (Option<T>, Option<T>) {
+    if let Some(mut first) = v.next() {
+        let mut second = None;
+        for e in v {
+            if key_fn(&e) < key_fn(&first) {
+                second = Some(mem::replace(&mut first, e));
+            }
+        }
+        (Some(first), second)
+    } else {
+        (None, None)
+    }
+}
+
+#[derive(Copy, Clone)]
+enum LayerId {
+    _Obj,
+    Bg(u8),
+    Backdrop,
+}
+
+#[derive(Copy, Clone)]
+struct Layer {
+    #[allow(dead_code)]
+    id: LayerId,
+    color: u16,
+    priority: u8,
+    #[allow(dead_code)]
+    force_alpha: bool, // OBJ only
+}
+
+fn pick_top_two_layers(layers: &[Option<Layer>; 6]) -> (&Layer, Option<&Layer>) {
+    let (first, second) = pick_top_two(layers.iter().filter_map(|o| o.as_ref()), |l| l.priority);
+    (first.unwrap(), second) // We'll always have at least the backdrop
+}
+
+fn render_mode0_line(
     screen_y: u16,
-    bg: usize,
     regs: &LcdControllerRegs,
     vram: &[u8],
     pals: &[u16],
 ) -> [u16; 240] {
     let mut buf = [0; 240];
+
     for screen_x in 0..240u16 {
-        buf[screen_x as usize] = render_text_bg_pixel(screen_y, screen_x, bg, regs, vram, pals);
+        // [OBJ, BG0, BG1, BG2, BG3, backdrop]
+        let mut layers = [None; 6];
+
+        // TODO: OBJ support
+
+        // Background layers
+        for bg in 0..=3 {
+            layers[bg + 1] = render_text_bg_pixel(
+                screen_y,
+                screen_x,
+                bg as u8,
+                &regs.bg_attributes[bg],
+                vram,
+                pals,
+            );
+        }
+        // Backdrop layer
+        layers[5] = Some(Layer {
+            id: LayerId::Backdrop,
+            color: pals[0],
+            priority: 4,
+            force_alpha: false,
+        });
+
+        let (top_layer, _bottom_layer) = pick_top_two_layers(&layers);
+        // TODO: Blending
+        let output = top_layer.color;
+
+        buf[screen_x as usize] = output;
     }
     buf
 }
@@ -225,11 +312,10 @@ fn copy_line(rgbx_pixels: &mut [u8], line: &[u16]) {
 fn draw_screen(texture: &mut Texture, regs: &LcdControllerRegs, vram: &[u8], pals: &[u16]) {
     texture
         .with_lock(None, |pixels: &mut [u8], stride| {
+            let bg_pals = &pals[..16 * 16];
             for screen_y in 0..160 {
-                let bg_pals = &pals[..16 * 16];
-                let line_buf = render_text_bg_line(screen_y as u16, 0, regs, vram, bg_pals);
-                let line_offset = screen_y * stride;
-                copy_line(&mut pixels[line_offset..line_offset + stride], &line_buf);
+                let line_buf = render_mode0_line(screen_y as u16, regs, vram, bg_pals);
+                copy_line(&mut pixels[screen_y * stride..][..stride], &line_buf);
             }
         })
         .unwrap();
