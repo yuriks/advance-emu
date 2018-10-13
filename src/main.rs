@@ -244,6 +244,22 @@ fn convert_to_u16_vec(src: &[u8]) -> Vec<u16> {
     new_vec
 }
 
+const _BRIN_REGS: &[(u32, u16)] = &[
+    (0x0400_0000, 0x0100),
+    (0x0400_0008, 0x5E00),
+    (0x0400_0010, 0x00C0),
+    (0x0400_0012, 0x0040),
+];
+
+const PRIO_REGS: &[(u32, u16)] = &[
+    (0x0400_0000, 0x1F40),
+    (0x0400_0004, 0x0009),
+    (0x0400_0008, 0x1C08),
+    (0x0400_000A, 0x0584),
+    (0x0400_000C, 0x0685),
+    (0x0400_000E, 0x0786),
+];
+
 fn main() -> Result<(), Box<Error>> {
     let sdl_context = sdl2::init()?;
     let sdl_video = sdl_context.video()?;
@@ -256,16 +272,15 @@ fn main() -> Result<(), Box<Error>> {
         texture_creator.create_texture_streaming(PixelFormatEnum::BGR555, 240, 160)?;
 
     let mut lcd_regs = LcdControllerRegs::new();
-    lcd_regs.write(0x0400_0000, 0x0100);
-    lcd_regs.write(0x0400_0008, 0x5E00);
-    lcd_regs.write(0x0400_0010, 0x00C0);
-    lcd_regs.write(0x0400_0012, 0x0040);
+    for &(addr, value) in PRIO_REGS.iter() {
+        lcd_regs.write(addr, value as u32);
+    }
 
     let mut bgx = 0xC0;
     let mut bgy = 0x40;
 
-    let pal_mem = convert_to_u16_vec(load_file("brin-pal.bin", 1024)?.as_ref());
-    let vram_mem = load_file("brin-vram.bin", 96 * 1024)?;
+    let pal_mem = convert_to_u16_vec(load_file("prio-pal.bin", 1024)?.as_ref());
+    let vram_mem = load_file("prio-vram.bin", 96 * 1024)?;
 
     assert_eq!(lcd_regs.video_mode, 0);
 
