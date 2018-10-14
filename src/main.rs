@@ -1,10 +1,13 @@
-#![feature(macro_literal_matcher, min_const_fn)]
+#![feature(macro_literal_matcher, min_const_fn, async_await, await_macro, futures_api, arbitrary_self_types, pin)]
 
 extern crate byteorder;
 extern crate num;
 extern crate sdl2;
+extern crate core;
+extern crate futures;
 
 mod ppu;
+mod scheduler;
 
 use byteorder::ByteOrder;
 use byteorder::NativeEndian;
@@ -83,6 +86,8 @@ const BM_MODES_REGS: &[(u32, u16)] = &[
 ];
 
 fn main() -> Result<(), Box<Error>> {
+    scheduler::scheduler_test();
+
     let sdl_context = sdl2::init()?;
     let sdl_video = sdl_context.video()?;
 
