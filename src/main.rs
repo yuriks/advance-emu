@@ -559,9 +559,6 @@ fn main() -> Result<(), Box<Error>> {
         lcd_regs.write(addr, value as u32);
     }
 
-    let mut bgx = 0xC0;
-    let mut bgy = 0x40;
-
     let pal_mem = convert_to_u16_vec(load_file("bm_modes-pal.bin", 1024)?.as_ref());
     let vram_mem = load_file("bm_modes-vram.bin", 96 * 1024)?;
 
@@ -579,26 +576,6 @@ fn main() -> Result<(), Box<Error>> {
                         break 'main_loop;
                     }
                     println!("Pressed {}", scancode);
-                    match scancode {
-                        Scancode::A => bgx -= 8,
-                        Scancode::D => bgx += 8,
-                        Scancode::Left => bgx -= 1,
-                        Scancode::Right => bgx += 1,
-
-                        Scancode::W => bgy -= 8,
-                        Scancode::S => bgy += 8,
-                        Scancode::Up => bgy -= 1,
-                        Scancode::Down => bgy += 1,
-
-                        Scancode::Tab => {
-                            bgx = 0;
-                            bgy = 0;
-                        }
-
-                        _ => (),
-                    }
-                    lcd_regs.write(0x0400_0010, bgx as u32);
-                    lcd_regs.write(0x0400_0012, bgy as u32);
                 }
                 Event::KeyUp { .. } => {}
 
