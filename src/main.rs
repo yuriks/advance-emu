@@ -1,10 +1,20 @@
-#![feature(macro_literal_matcher, min_const_fn)]
+#![feature(
+    arbitrary_self_types,
+    generator_trait,
+    generators,
+    macro_literal_matcher,
+    min_const_fn,
+    pin,
+    test
+)]
 
 extern crate byteorder;
 extern crate num;
 extern crate sdl2;
+extern crate test;
 
 mod ppu;
+mod scheduler;
 
 use byteorder::ByteOrder;
 use byteorder::NativeEndian;
