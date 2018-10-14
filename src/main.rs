@@ -212,7 +212,7 @@ fn render_text_bg_pixel(
             id: LayerId::Bg(bg_id),
             color,
             priority: bg_regs.priority,
-            force_alpha: false,
+            force_alpha_blend: false,
         })
     } else {
         None
@@ -250,7 +250,7 @@ struct Layer {
     color: u16,
     priority: u8,
     #[allow(dead_code)]
-    force_alpha: bool, // OBJ only
+    force_alpha_blend: bool, // OBJ only
 }
 
 fn pick_top_two_layers(layers: &[Option<Layer>; 6]) -> (&Layer, Option<&Layer>) {
@@ -258,12 +258,17 @@ fn pick_top_two_layers(layers: &[Option<Layer>; 6]) -> (&Layer, Option<&Layer>) 
     (first.unwrap(), second) // We'll always have at least the backdrop
 }
 
-fn render_mode0_line(
+fn render_lcd_line(
     screen_y: u16,
     regs: &LcdControllerRegs,
     vram: &[u8],
     pals: &[u16],
 ) -> [u16; 240] {
+    let bg_vram = &vram[..64 * 1024];
+    let bg_pals = &pals[..16 * 16];
+    let _obj_vram = &vram[64 * 1024..];
+    let bitmap_vram = &vram[..80 * 1024];
+
     let mut buf = [0; 240];
 
     for screen_x in 0..240u16 {
@@ -273,22 +278,29 @@ fn render_mode0_line(
         // TODO: OBJ support
 
         // Background layers
-        for bg in 0..=3 {
-            layers[bg + 1] = render_text_bg_pixel(
+        match regs.video_mode {
+            0 => render_mode0_backgrounds(&mut layers, screen_y, screen_x, regs, bg_vram, bg_pals),
+            1 => render_mode1_backgrounds(&mut layers, screen_y, screen_x, regs, bg_vram, bg_pals),
+            2 => unimplemented!(),
+            3 => render_mode3_backgrounds(&mut layers, screen_y, screen_x, regs, bitmap_vram),
+            4 => render_mode4_backgrounds(
+                &mut layers,
                 screen_y,
                 screen_x,
-                bg as u8,
-                &regs.bg_attributes[bg],
-                vram,
-                pals,
-            );
+                regs,
+                bitmap_vram,
+                bg_pals,
+            ),
+            5 => render_mode5_backgrounds(&mut layers, screen_y, screen_x, regs, bitmap_vram),
+            invalid_mode => println!("Invalid display mode: {}", invalid_mode),
         }
+
         // Backdrop layer
         layers[5] = Some(Layer {
             id: LayerId::Backdrop,
-            color: pals[0],
+            color: bg_pals[0],
             priority: 4,
-            force_alpha: false,
+            force_alpha_blend: false,
         });
 
         let (top_layer, _bottom_layer) = pick_top_two_layers(&layers);
@@ -298,6 +310,186 @@ fn render_mode0_line(
         buf[screen_x as usize] = output;
     }
     buf
+}
+
+fn render_mode0_backgrounds(
+    layers: &mut [Option<Layer>; 6],
+    screen_y: u16,
+    screen_x: u16,
+    regs: &LcdControllerRegs,
+    bg_vram: &[u8],
+    bg_pals: &[u16],
+) {
+    for bg in 0..=3 {
+        if regs.bg_layer_enabled[bg] {
+            layers[bg + 1] = render_text_bg_pixel(
+                screen_y,
+                screen_x,
+                bg as u8,
+                &regs.bg_attributes[bg],
+                bg_vram,
+                bg_pals,
+            );
+        }
+    }
+}
+
+fn render_mode1_backgrounds(
+    layers: &mut [Option<Layer>; 6],
+    screen_y: u16,
+    screen_x: u16,
+    regs: &LcdControllerRegs,
+    bg_vram: &[u8],
+    bg_pals: &[u16],
+) {
+    for bg in 0..=1 {
+        if regs.bg_layer_enabled[bg] {
+            layers[bg + 1] = render_text_bg_pixel(
+                screen_y,
+                screen_x,
+                bg as u8,
+                &regs.bg_attributes[bg],
+                bg_vram,
+                bg_pals,
+            );
+        }
+    }
+    // TODO: affine backgrounds
+}
+
+const BITMAP_BG_LAYER: usize = 2;
+
+fn render_mode3_bg_pixel(
+    screen_y: u16,
+    screen_x: u16,
+    bg_regs: &BgAttributes,
+    vram: &[u8],
+) -> Option<Layer> {
+    if screen_y >= 160 || screen_x >= 240 {
+        return None;
+    }
+
+    let pixel_offset = (screen_y * 240 + screen_x) as usize * 2;
+    let color = LE::read_u16(&vram[pixel_offset..]);
+
+    Some(Layer {
+        id: LayerId::Bg(BITMAP_BG_LAYER as u8),
+        color,
+        priority: bg_regs.priority,
+        force_alpha_blend: false,
+    })
+}
+
+fn render_mode3_backgrounds(
+    layers: &mut [Option<Layer>; 6],
+    screen_y: u16,
+    screen_x: u16,
+    regs: &LcdControllerRegs,
+    vram: &[u8],
+) {
+    if regs.bg_layer_enabled[BITMAP_BG_LAYER] {
+        // TODO: affine support
+        layers[BITMAP_BG_LAYER] = render_mode3_bg_pixel(
+            screen_y,
+            screen_x,
+            &regs.bg_attributes[BITMAP_BG_LAYER],
+            vram,
+        );
+    }
+}
+
+fn render_mode4_bg_pixel(
+    screen_y: u16,
+    screen_x: u16,
+    bg_regs: &BgAttributes,
+    display_page: u8,
+    vram: &[u8],
+    bg_pals: &[u16],
+) -> Option<Layer> {
+    if screen_y >= 160 || screen_x >= 240 {
+        return None;
+    }
+
+    let page_offset = (screen_y * 240 + screen_x) as usize;
+    let page_base = display_page as usize * 0xA000;
+
+    let palette_index = vram[page_base + page_offset];
+    let color = bg_pals[palette_index as usize];
+
+    if palette_index != 0 {
+        Some(Layer {
+            id: LayerId::Bg(BITMAP_BG_LAYER as u8),
+            color,
+            priority: bg_regs.priority,
+            force_alpha_blend: false,
+        })
+    } else {
+        None
+    }
+}
+
+fn render_mode4_backgrounds(
+    layers: &mut [Option<Layer>; 6],
+    screen_y: u16,
+    screen_x: u16,
+    regs: &LcdControllerRegs,
+    vram: &[u8],
+    bg_pals: &[u16],
+) {
+    if regs.bg_layer_enabled[BITMAP_BG_LAYER] {
+        // TODO: affine support
+        layers[BITMAP_BG_LAYER] = render_mode4_bg_pixel(
+            screen_y,
+            screen_x,
+            &regs.bg_attributes[BITMAP_BG_LAYER],
+            regs.active_display_page,
+            vram,
+            bg_pals,
+        );
+    }
+}
+
+fn render_mode5_bg_pixel(
+    screen_y: u16,
+    screen_x: u16,
+    bg_regs: &BgAttributes,
+    display_page: u8,
+    vram: &[u8],
+) -> Option<Layer> {
+    if screen_y >= 128 || screen_x >= 160 {
+        return None;
+    }
+
+    let page_offset = (screen_y * 160 + screen_x) as usize * 2;
+    let page_base = display_page as usize * 0xA000;
+
+    let color = LE::read_u16(&vram[page_base + page_offset..]);
+
+    Some(Layer {
+        id: LayerId::Bg(BITMAP_BG_LAYER as u8),
+        color,
+        priority: bg_regs.priority,
+        force_alpha_blend: false,
+    })
+}
+
+fn render_mode5_backgrounds(
+    layers: &mut [Option<Layer>; 6],
+    screen_y: u16,
+    screen_x: u16,
+    regs: &LcdControllerRegs,
+    vram: &[u8],
+) {
+    if regs.bg_layer_enabled[BITMAP_BG_LAYER] {
+        // TODO: affine support
+        layers[BITMAP_BG_LAYER] = render_mode5_bg_pixel(
+            screen_y,
+            screen_x,
+            &regs.bg_attributes[BITMAP_BG_LAYER],
+            regs.active_display_page,
+            vram,
+        );
+    }
 }
 
 fn copy_line(rgbx_pixels: &mut [u8], line: &[u16]) {
@@ -312,9 +504,8 @@ fn copy_line(rgbx_pixels: &mut [u8], line: &[u16]) {
 fn draw_screen(texture: &mut Texture, regs: &LcdControllerRegs, vram: &[u8], pals: &[u16]) {
     texture
         .with_lock(None, |pixels: &mut [u8], stride| {
-            let bg_pals = &pals[..16 * 16];
             for screen_y in 0..160 {
-                let line_buf = render_mode0_line(screen_y as u16, regs, vram, bg_pals);
+                let line_buf = render_lcd_line(screen_y as u16, regs, vram, pals);
                 copy_line(&mut pixels[screen_y * stride..][..stride], &line_buf);
             }
         })
@@ -337,13 +528,19 @@ const _BRIN_REGS: &[(u32, u16)] = &[
     (0x0400_0012, 0x0040),
 ];
 
-const PRIO_REGS: &[(u32, u16)] = &[
+const _PRIO_REGS: &[(u32, u16)] = &[
     (0x0400_0000, 0x1F40),
     (0x0400_0004, 0x0009),
     (0x0400_0008, 0x1C08),
     (0x0400_000A, 0x0584),
     (0x0400_000C, 0x0685),
     (0x0400_000E, 0x0786),
+];
+
+const BM_MODES_REGS: &[(u32, u16)] = &[
+    (0x0400_0000, 0x0403),
+    (0x0400_0004, 0x0002),
+    (0x0400_000C, 0x0000),
 ];
 
 fn main() -> Result<(), Box<Error>> {
@@ -358,17 +555,15 @@ fn main() -> Result<(), Box<Error>> {
         texture_creator.create_texture_streaming(PixelFormatEnum::BGR555, 240, 160)?;
 
     let mut lcd_regs = LcdControllerRegs::new();
-    for &(addr, value) in PRIO_REGS.iter() {
+    for &(addr, value) in BM_MODES_REGS.iter() {
         lcd_regs.write(addr, value as u32);
     }
 
     let mut bgx = 0xC0;
     let mut bgy = 0x40;
 
-    let pal_mem = convert_to_u16_vec(load_file("prio-pal.bin", 1024)?.as_ref());
-    let vram_mem = load_file("prio-vram.bin", 96 * 1024)?;
-
-    assert_eq!(lcd_regs.video_mode, 0);
+    let pal_mem = convert_to_u16_vec(load_file("bm_modes-pal.bin", 1024)?.as_ref());
+    let vram_mem = load_file("bm_modes-vram.bin", 96 * 1024)?;
 
     let mut event_loop = sdl_context.event_pump()?;
     'main_loop: loop {
@@ -414,7 +609,7 @@ fn main() -> Result<(), Box<Error>> {
         draw_screen(
             &mut lcd_texture,
             &lcd_regs,
-            &vram_mem[..64 * 1024],
+            vram_mem.as_ref(),
             pal_mem.as_ref(),
         );
 
