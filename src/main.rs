@@ -1,4 +1,4 @@
-#![feature(macro_literal_matcher, min_const_fn, async_await, await_macro, futures_api, arbitrary_self_types, pin)]
+#![feature(macro_literal_matcher, min_const_fn, async_await, await_macro, futures_api, arbitrary_self_types, pin, generators, generator_trait)]
 
 extern crate byteorder;
 extern crate num;
