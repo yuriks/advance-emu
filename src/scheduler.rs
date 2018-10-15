@@ -20,6 +20,12 @@ thread_local! {
     static CURRENT_TASK: Cell<Option<TaskId>> = Cell::new(None);
 }
 
+fn postupdate_cell<T: Copy>(cell: &Cell<T>, f: fn(T) -> T) -> T {
+    let t = cell.get();
+    cell.set(f(t));
+    t
+}
+
 struct DummyWake;
 
 impl Wake for DummyWake {
@@ -30,13 +36,12 @@ impl Wake for DummyWake {
 
 struct ScheduledTask {
     scheduled_at: u64,
-    scheduling_id: usize, // Used for sort tie-breaking
     task_id: TaskId,
 }
 
 impl Ord for ScheduledTask {
     fn cmp(&self, other: &Self) -> Ordering {
-        (other.scheduled_at, other.scheduling_id).cmp(&(self.scheduled_at, self.scheduling_id))
+        (other.scheduled_at, other.task_id).cmp(&(self.scheduled_at, self.task_id))
     }
 }
 
@@ -48,129 +53,106 @@ impl PartialOrd for ScheduledTask {
 
 impl PartialEq for ScheduledTask {
     fn eq(&self, other: &Self) -> bool {
-        self.scheduled_at == other.scheduled_at && self.scheduling_id == other.scheduling_id
+        (self.scheduled_at, self.task_id) == (other.scheduled_at, other.task_id)
     }
 }
 
 impl Eq for ScheduledTask {}
 
-struct TaskSchedulerInner {
-    current_time: u64,
-
-    scheduled_tasks: BinaryHeap<ScheduledTask>,
-
-    scheduling_counter: usize,
-    next_task_id: usize,
-
-    wait_queue: HashMap<TaskId, LocalFutureObj<'static, ()>>,
-}
-
-impl TaskSchedulerInner {
-    fn next_scheduling_id(&mut self) -> usize {
-        let next_id = self.scheduling_counter;
-        self.scheduling_counter += 1;
-        next_id
-    }
-
-    fn reschedule_task(&mut self, at: u64, task_id: TaskId) {
-        let scheduling_id = self.next_scheduling_id();
-        self.scheduled_tasks.push(ScheduledTask {
-            scheduled_at: at,
-            scheduling_id,
-            task_id,
-        });
-    }
-
-    fn alloc_task(&mut self) -> TaskId {
-        let task_id = NonZeroUsize::new(self.next_task_id).unwrap();
-        self.next_task_id += 1;
-
-        task_id
-    }
-}
-
 struct TaskScheduler {
-    inner: RefCell<TaskSchedulerInner>,
+    current_time: Cell<u64>,
+
+    scheduled_tasks: RefCell<BinaryHeap<ScheduledTask>>,
+
+    next_task_id: Cell<usize>,
+    active_tasks: RefCell<HashMap<TaskId, LocalFutureObj<'static, ()>>>,
 }
 
 impl TaskScheduler {
     fn new() -> TaskScheduler {
         TaskScheduler {
-            inner: RefCell::new(TaskSchedulerInner {
-                current_time: 0,
-                scheduled_tasks: BinaryHeap::new(),
-                scheduling_counter: 0,
-                next_task_id: 1,
-                wait_queue: HashMap::new(),
-            }),
+            current_time: 0.into(),
+            scheduled_tasks: BinaryHeap::new().into(),
+            next_task_id: 1.into(),
+            active_tasks: HashMap::new().into(),
         }
     }
 
-    fn wait_cycles(self: &TaskScheduler, cycles: u64) -> WaitCycles {
-        let inner = self.inner.borrow();
-        let scheduled_time = inner.current_time + cycles;
+    fn reschedule_task(&self, at: u64, task_id: TaskId) {
+        self.scheduled_tasks.borrow_mut().push(ScheduledTask {
+            scheduled_at: at,
+            task_id,
+        });
+    }
 
-        WaitCycles { at: scheduled_time }
+    fn alloc_task(&self) -> TaskId {
+        let task_id = postupdate_cell(&self.next_task_id, |x| x + 1);
+        NonZeroUsize::new(task_id).unwrap()
+    }
+
+    fn wait_cycles(self: &TaskScheduler, cycles: u64) -> WaitCycles {
+        WaitCycles { at: self.current_time.get() + cycles }
     }
 
     fn run(self: &TaskScheduler) {
         for _ in 0..30 {
-            let mut inner = self.inner.borrow_mut();
-            let now = inner.current_time;
+            let mut scheduled_tasks = self.scheduled_tasks.borrow_mut();
+            let mut active_tasks = self.active_tasks.borrow_mut();
 
-            if inner.scheduled_tasks.is_empty() && inner.wait_queue.is_empty() {
+            assert_eq!(scheduled_tasks.is_empty(), active_tasks.is_empty());
+            if active_tasks.is_empty() {
                 println!("Nothing more to run");
                 break;
             }
 
+            let now = self.current_time.get();
             println!("[cycle {}]", now);
 
             loop {
-                if let Some(task) = inner.scheduled_tasks.peek() {
+                if let Some(task) = scheduled_tasks.peek() {
                     if task.scheduled_at != now {
                         break;
                     }
                 } else {
                     break;
                 }
-                let scheduled_task = inner.scheduled_tasks.pop().unwrap();
+                let scheduled_task = scheduled_tasks.pop().unwrap();
                 let task_id = scheduled_task.task_id;
-                let mut task = inner.wait_queue.remove(&task_id).unwrap();
 
-                drop(inner);
+                // scheduled_tasks might be modified by poll()
+                drop(scheduled_tasks);
                 let poll_result;
                 {
-                    let pinned_task = Pin::new(&mut task);
+                    let mut task = active_tasks.get_mut(&task_id).unwrap();
                     let waker = task::local_waker_from_nonlocal(Arc::new(DummyWake));
                     CURRENT_TASK.with(|current_task| current_task.set(Some(task_id)));
-                    poll_result = pinned_task.poll(&waker);
+                    poll_result = Pin::new(&mut task).poll(&waker);
                     CURRENT_TASK.with(|current_task| current_task.set(None));
                 };
-                inner = self.inner.borrow_mut();
-                if poll_result == Poll::Pending {
-                    inner.wait_queue.insert(task_id, task);
-                } else {
-                    println!("Finished task {}", task_id);
+                scheduled_tasks = self.scheduled_tasks.borrow_mut();
+
+                match poll_result {
+                    Poll::Ready(()) => {
+                        active_tasks.remove(&task_id);
+                        println!("Finished task {}", task_id)
+                    },
+                    Poll::Pending => {}
                 }
             }
 
-            inner.current_time += 1;
+            postupdate_cell(&self.current_time, |x| x + 1);
         }
         println!("Done");
     }
 
     fn add_task(self: &TaskScheduler, f: impl Future<Output = ()> + 'static) {
-        let mut inner = self.inner.borrow_mut();
-
-        let task_id = inner.alloc_task();
+        let task_id = self.alloc_task();
         let task = LocalFutureObj::new(Box::new(f));
 
-        let now = inner.current_time;
-        let scheduling_id = inner.next_scheduling_id();
-        inner.wait_queue.insert(task_id, task);
-        inner.scheduled_tasks.push(ScheduledTask {
+        let now = self.current_time.get();
+        self.active_tasks.borrow_mut().insert(task_id, task);
+        self.scheduled_tasks.borrow_mut().push(ScheduledTask {
             scheduled_at: now,
-            scheduling_id,
             task_id,
         });
     }
@@ -188,11 +170,10 @@ impl Future for WaitCycles {
     type Output = ();
 
     fn poll(self: Pin<&mut Self>, _: &LocalWaker) -> Poll<()> {
-        TASK_SCHEDULER.with(|scheduler| {
-            let mut scheduler = scheduler.inner.borrow_mut();
-
-            assert!(scheduler.current_time <= self.at);
-            if scheduler.current_time == self.at {
+        TASK_SCHEDULER.with(|scheduler: &TaskScheduler| {
+            let current_time = scheduler.current_time.get();
+            assert!(current_time <= self.at);
+            if current_time == self.at {
                 Poll::Ready(())
             } else {
                 let task_id = CURRENT_TASK
