@@ -110,10 +110,7 @@ impl TaskScheduler {
         let inner = self.inner.borrow();
         let scheduled_time = inner.current_time + cycles;
 
-        WaitCycles {
-            at: scheduled_time,
-            task_id: CURRENT_TASK.with(|current_task| current_task.get().unwrap()),
-        }
+        WaitCycles { at: scheduled_time }
     }
 
     fn run(self: &TaskScheduler) {
@@ -185,7 +182,6 @@ fn wait_cycles(cycles: u64) -> WaitCycles {
 
 struct WaitCycles {
     at: u64,
-    task_id: TaskId,
 }
 
 impl Future for WaitCycles {
@@ -199,7 +195,9 @@ impl Future for WaitCycles {
             if scheduler.current_time == self.at {
                 Poll::Ready(())
             } else {
-                scheduler.reschedule_task(self.at, self.task_id);
+                let task_id = CURRENT_TASK
+                    .with(|current_task| current_task.get().expect("No currently active task"));
+                scheduler.reschedule_task(self.at, task_id);
                 Poll::Pending
             }
         })
@@ -234,6 +232,7 @@ async fn test_task2() {
 
 pub fn scheduler_test() {
     TASK_SCHEDULER.with(|scheduler| {
+        scheduler.add_task(wait_cycles(10));
         scheduler.add_task(test_task1());
         scheduler.add_task(test_task2());
         scheduler.run();
