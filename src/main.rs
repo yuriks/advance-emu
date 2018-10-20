@@ -13,6 +13,9 @@ extern crate num;
 extern crate sdl2;
 extern crate test;
 
+#[macro_use]
+mod util;
+
 mod ppu;
 mod scheduler;
 
