@@ -16,6 +16,7 @@ extern crate test;
 #[macro_use]
 mod util;
 
+mod cpu;
 mod ppu;
 mod scheduler;
 
