@@ -23,6 +23,11 @@ enum DecodedArmInstruction {
         rotate: u8,
         imm: u8,
     },
+    Branch {
+        cond: u8,
+        link: bool,
+        offset: u32,
+    },
     UndefinedInstruction,
     UnknownInstruction,
 }
@@ -49,15 +54,24 @@ impl DecodeInstruction for DecodedArmInstruction {
     fn decode_arm_instruction(instr: u32) -> DecodedArmInstruction {
         use self::DecodedArmInstruction::*;
 
+        let cond = bit!(instr[28:31]) as u8;
+
         if test(instr, b"cccc_001o_ooos_nnnn_dddd_rrrr_iiii_iiii") {
             return DataProcessingImmediate {
-                cond: bit!(instr[28:31]) as u8,
+                cond,
                 opcode: bit!(instr[21:24]) as u8,
                 s: bit!(instr[20]) != 0,
                 rn: bit!(instr[16:19]) as u8,
                 rd: bit!(instr[12:15]) as u8,
                 rotate: bit!(instr[8:11]) as u8,
                 imm: bit!(instr[0:7]) as u8,
+            };
+        }
+        if test(instr, b"cccc_101l_iiii_iiii_iiii_iiii_iiii_iiii") {
+            return Branch {
+                cond,
+                link: bit!(instr[24]) != 0,
+                offset: bit!(instr[0:23]) as u32,
             };
         }
 
@@ -69,7 +83,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_decode_data_processing_imm() {
+    fn decode_data_processing_imm() {
         let instr = 0xE3A00302; // mov r0, #134217728
         let actual = DecodedArmInstruction::decode_arm_instruction(instr);
         let expected = DecodedArmInstruction::DataProcessingImmediate {
@@ -80,6 +94,18 @@ mod tests {
             rd: 0,
             rotate: 3,
             imm: 0x02,
+        };
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn decode_branch() {
+        let instr = 0xEA000006; // b $00000020
+        let actual = DecodedArmInstruction::decode_arm_instruction(instr);
+        let expected = DecodedArmInstruction::Branch {
+            cond: 0b1110,
+            link: false,
+            offset: (0x20 - 8) / 4,
         };
         assert_eq!(actual, expected);
     }
