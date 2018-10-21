@@ -1,10 +1,10 @@
-trait DecodeInstruction {
+pub trait DecodeInstruction {
     fn decode_arm_instruction(instr: u32) -> Self;
 }
 
 //#[derive(DecodeInstruction)] TODO: Optimize with procedural macro later
 #[derive(Debug, Eq, PartialEq)]
-enum DecodedArmInstruction {
+pub enum DecodedArmInstruction {
     DataProcessingImmediate {
         cond: u8,
         opcode: u8,
@@ -179,6 +179,7 @@ impl DecodeInstruction for DecodedArmInstruction {
     }
 }
 
+#[cfg(test)]
 mod tests {
     use super::*;
 

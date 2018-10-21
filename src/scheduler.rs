@@ -11,9 +11,14 @@ pub struct WaitCycles {
     cycles: u64,
 }
 
+#[inline(always)]
+pub fn wait_cycles(cycles: u64) -> WaitCycles {
+    WaitCycles { cycles }
+}
+
 macro_rules! wait_cycles {
     ($num:expr) => {
-        yield WaitCycles { cycles: $num }
+        yield ::scheduler::wait_cycles($num)
     };
 }
 
@@ -24,7 +29,7 @@ pub trait Task {
     fn into_boxed_task(self) -> BoxedTask<Self::Return>;
 }
 
-struct GeneratorTask<G> {
+pub struct GeneratorTask<G> {
     generator: G,
     _pin: Pinned,
 }

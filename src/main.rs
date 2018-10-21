@@ -15,10 +15,11 @@ extern crate test;
 
 #[macro_use]
 mod util;
+#[macro_use]
+mod scheduler;
 
 mod cpu;
 mod ppu;
-mod scheduler;
 
 use byteorder::ByteOrder;
 use byteorder::NativeEndian;
