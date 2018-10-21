@@ -213,7 +213,7 @@ mod tests {
     }
 
     #[bench]
-    fn bench_task_switch(b: &mut Bencher) {
+    fn bench_task_switch_overhead(b: &mut Bencher) {
         // Measures speed of cycling between 16 tasks, without any scheduler overhead
         let mut tasks = Vec::new();
         let mut queued_tasks: Vec<usize> = Vec::new();
@@ -228,6 +228,21 @@ mod tests {
                 tasks[task_id].as_mut().step();
             }
             queued_tasks.clear();
+        });
+    }
+
+    #[bench]
+    fn bench_task_switch_iterate(b: &mut Bencher) {
+        // Measures speed of cycling between 16 tasks, without any scheduler overhead
+        let mut tasks = Vec::new();
+        for i in 0..16 {
+            tasks.push(Box::pinned(big_task1(1 + i / 6)));
+        }
+
+        b.iter(|| {
+            for task in tasks.iter_mut() {
+                task.as_mut().step();
+            }
         });
     }
 
