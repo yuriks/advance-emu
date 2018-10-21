@@ -41,7 +41,6 @@ enum DecodedArmInstruction {
     },
     BranchAndExchangeReg {
         cond: u8,
-        link: bool,
         rm: u8,
     },
     UndefinedInstruction,
@@ -73,11 +72,10 @@ impl DecodeInstruction for DecodedArmInstruction {
         // b"ccccxxxx_xxxxxxxx_xxxxxxxx_xxxxxxxx"
         let cond = bit!(instr[28:31]) as u8;
 
-        // TEQ with S=0
-        if test(instr, b"cccc0001_00101111_11111111_00l1mmmm") {
+        // (24 bits) TEQ with S=0
+        if test(instr, b"cccc0001_00101111_11111111_0001mmmm") {
             return BranchAndExchangeReg {
                 cond,
-                link: bit!(instr[5]) != 0,
                 rm: bit!(instr[0:3]) as u8,
             };
         }
@@ -209,7 +207,6 @@ mod tests {
         let actual = DecodedArmInstruction::decode_arm_instruction(instr);
         let expected = DecodedArmInstruction::BranchAndExchangeReg {
             cond: 0b1110,
-            link: false,
             rm: 0,
         };
         assert_eq!(actual, expected);
