@@ -22,11 +22,10 @@ macro_rules! wait_cycles {
     };
 }
 
-pub trait Task {
+pub trait Task<'ctx> {
     type Return;
 
     fn step(self: Pin<&mut Self>) -> GeneratorState<WaitCycles, Self::Return>;
-    fn into_boxed_task(self) -> BoxedTask<Self::Return>;
 }
 
 pub struct GeneratorTask<G> {
@@ -34,7 +33,7 @@ pub struct GeneratorTask<G> {
     _pin: Pinned,
 }
 
-impl<G: Generator<Yield = WaitCycles> + 'static> GeneratorTask<G> {
+impl<G: Generator<Yield = WaitCycles>> GeneratorTask<G> {
     /// Wraps a Generator in a Task. `generator.resume()` must've never been called before handing
     /// it to this function.
     ///
@@ -48,37 +47,12 @@ impl<G: Generator<Yield = WaitCycles> + 'static> GeneratorTask<G> {
     }
 }
 
-impl<G: Generator<Yield = WaitCycles> + 'static> Task for GeneratorTask<G> {
+impl<'ctx, G: Generator<Yield = WaitCycles> + 'ctx> Task<'ctx> for GeneratorTask<G> {
     type Return = G::Return;
 
     fn step(self: Pin<&mut Self>) -> GeneratorState<WaitCycles, G::Return> {
         // This is safe because Task is !Unpin
         unsafe { Pin::get_mut_unchecked(self).generator.resume() }
-    }
-
-    fn into_boxed_task(self) -> BoxedTask<Self::Return> {
-        BoxedTask {
-            generator: Box::pinned(self.generator),
-        }
-    }
-}
-
-/// This is a work-around for the fact that Task isn't considered object-safe currently. It can be
-/// replaced by Box<dyn Task> after https://github.com/rust-lang/rust/pull/54383 ships in nightly.
-pub struct BoxedTask<T> {
-    generator: Pin<Box<dyn Generator<Yield = WaitCycles, Return = T> + 'static>>,
-}
-
-impl<T> Task for BoxedTask<T> {
-    type Return = T;
-
-    fn step(self: Pin<&mut Self>) -> GeneratorState<WaitCycles, T> {
-        let this = Pin::get_mut(self);
-        unsafe { Pin::get_mut_unchecked(this.generator.as_mut()).resume() }
-    }
-
-    fn into_boxed_task(self) -> BoxedTask<Self::Return> {
-        self
     }
 }
 
@@ -121,18 +95,18 @@ impl PartialOrd for ScheduledTask {
     }
 }
 
-pub struct TaskScheduler {
+pub struct TaskScheduler<'g> {
     current_time: u64,
 
     // TODO: Optimize this using a fixed-size ring buffer for events in the near future, to get fast
     // O(1) push for those instead of using the heap.
     scheduled_tasks: BinaryHeap<ScheduledTask>,
 
-    active_tasks: Vec<Option<BoxedTask<()>>>,
+    active_tasks: Vec<Option<Pin<Box<dyn Task<'g, Return = ()>>>>>,
 }
 
-impl TaskScheduler {
-    pub fn new() -> TaskScheduler {
+impl<'g> TaskScheduler<'g> {
+    pub fn new() -> TaskScheduler<'g> {
         TaskScheduler {
             current_time: 0,
             scheduled_tasks: BinaryHeap::new(),
@@ -144,7 +118,7 @@ impl TaskScheduler {
         self.current_time
     }
 
-    pub fn add_new_task(&mut self, task: BoxedTask<()>) {
+    pub fn add_new_task(&mut self, task: Pin<Box<dyn Task<'g, Return = ()>>>) {
         let task_id = self.active_tasks.len();
         self.active_tasks.push(Some(task));
         self.scheduled_tasks.push(ScheduledTask {
@@ -176,7 +150,7 @@ impl TaskScheduler {
                     .get_mut(task_id)
                     .and_then(|x| x.as_mut())
                     .unwrap();
-                Pin::new(task).step()
+                task.as_mut().step()
             };
             match result {
                 GeneratorState::Yielded(WaitCycles { cycles }) => {
@@ -198,14 +172,14 @@ mod tests {
     use super::*;
     use test::Bencher;
 
-    fn big_task2(delay: u64) -> impl Task<Return = u32> {
+    fn big_task2(delay: u64) -> impl Task<'static, Return = u32> {
         GeneratorTask::new(move || {
             wait_cycles!(delay);
             32
         })
     }
 
-    fn big_task1(delay: u64) -> impl Task<Return = ()> {
+    fn big_task1(delay: u64) -> impl Task<'static, Return = ()> {
         GeneratorTask::new(move || loop {
             wait_cycles!(delay);
             chain_task!(big_task2(delay));
@@ -251,7 +225,7 @@ mod tests {
         // Measures speed of cycling between 16 tasks, using the scheduler
         let mut scheduler = TaskScheduler::new();
         for i in 0..16 {
-            scheduler.add_new_task(big_task1(1 + i / 6).into_boxed_task());
+            scheduler.add_new_task(Box::pinned(big_task1(1 + i / 6)));
         }
 
         b.iter(|| {
