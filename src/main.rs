@@ -7,6 +7,7 @@
     pin,
     test
 )]
+#![allow(unused)]
 
 extern crate byteorder;
 extern crate num;
@@ -19,7 +20,9 @@ mod util;
 mod scheduler;
 
 mod cpu;
+mod memory;
 mod ppu;
+mod system;
 
 use byteorder::ByteOrder;
 use byteorder::NativeEndian;
