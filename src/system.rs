@@ -1,19 +1,19 @@
 use std::cell::Cell;
 
-#[derive(Copy, Clone, Eq, PartialEq)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum AccessWidth {
     Bit8,
     Bit16,
     Bit32,
 }
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum OperationType {
     Read { is_instruction: bool },
     Write,
 }
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct MemoryRequest {
     pub address: u32,
     pub width: AccessWidth,
@@ -35,18 +35,28 @@ pub struct Bus {
 
 impl Bus {
     #[inline]
-    fn make_request(&self, request: MemoryRequest) {
-        assert!(self.request.get().is_none());
+    pub fn make_request(&self, request: MemoryRequest) {
         self.request.set(Some(request));
     }
 
     #[inline]
-    fn should_cpu_wait(&self) -> bool {
+    pub fn should_cpu_wait(&self) -> bool {
         self.busy.get() || self.dma_active.get()
     }
 
     #[inline]
-    fn should_dma_wait(&self) -> bool {
+    pub fn should_dma_wait(&self) -> bool {
         self.busy.get()
+    }
+}
+
+impl Default for Bus {
+    fn default() -> Bus {
+        Bus {
+            request: None.into(),
+            busy: false.into(),
+            dma_active: false.into(),
+            data: 0xFFFFFFFF.into(),
+        }
     }
 }

@@ -50,7 +50,7 @@ pub enum DecodedArmInstruction {
     BranchImm {
         cond: u8,
         link: bool,
-        offset: u32,
+        offset: i32, // pre sign-extended
     },
     BranchAndExchangeReg {
         cond: u8,
@@ -171,7 +171,7 @@ impl DecodeInstruction for DecodedArmInstruction {
             return BranchImm {
                 cond,
                 link: bit!(instr[24]) != 0,
-                offset: bit!(instr[0:23]) as u32,
+                offset: ((bit!(instr[0:23]) << 8) as i32) >> 8,
             };
         }
 
