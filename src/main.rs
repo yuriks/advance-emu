@@ -2,8 +2,6 @@
     arbitrary_self_types,
     generator_trait,
     generators,
-    macro_literal_matcher,
-    min_const_fn,
     pin,
     test
 )]

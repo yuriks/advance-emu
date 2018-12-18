@@ -2,7 +2,7 @@ use std::cmp::Ord;
 use std::cmp::Ordering;
 use std::collections::binary_heap::PeekMut;
 use std::collections::BinaryHeap;
-use std::marker::Pinned;
+use std::marker::PhantomPinned;
 use std::ops::Generator;
 use std::ops::GeneratorState;
 use std::pin::Pin;
@@ -30,7 +30,7 @@ pub trait Task<'ctx> {
 
 pub struct GeneratorTask<G> {
     generator: G,
-    _pin: Pinned,
+    _pin: PhantomPinned,
 }
 
 impl<G: Generator<Yield = WaitCycles>> GeneratorTask<G> {
@@ -42,7 +42,7 @@ impl<G: Generator<Yield = WaitCycles>> GeneratorTask<G> {
     pub fn new(generator: G) -> GeneratorTask<G> {
         GeneratorTask {
             generator,
-            _pin: Pinned,
+            _pin: PhantomPinned,
         }
     }
 }
