@@ -65,7 +65,12 @@ fn decode_immediate(imm: u8, rotate: u8, carry_in: bool) -> (u32, bool) {
     (result, carry_out)
 }
 
-fn has_signed_overflow(x: u32, y: u32, r: u32) -> bool {
+fn add_has_signed_overflow(x: u32, y: u32, r: u32) -> bool {
+    // Signed overflow happens when the carry into the MSB differs from the carry out of it. This
+    // can be detected by comparing the output bit to both inputs. If they're both different, then
+    // that means that the MSB was affected by a carry that rippled *into* or *out of* it, as
+    // opposed to rippling *through* it, because that's the only scenario where a carry could affect
+    // the visible result of that bit such that it's different from the inputs.
     ((x ^ r) & (y ^ r)) & (1 << 31) != 0
 }
 
@@ -75,7 +80,7 @@ fn add_with_carry(op1: u32, op2: u32, carry_in: bool) -> (u32, bool, bool) {
     (
         result as u32,
         carry,
-        has_signed_overflow(op1, op2, result as u32),
+        add_has_signed_overflow(op1, op2, result as u32),
     )
 }
 
@@ -101,7 +106,7 @@ fn alu_operation(
         2 | 10 => {
             let (x, not_c) = op1.overflowing_sub(op2);
             cpsr.set_carry(!not_c);
-            cpsr.set_overflow(has_signed_overflow(op1, op2, x));
+            cpsr.set_overflow(add_has_signed_overflow(op1, op2, x));
 
             let (x2, c2, v2) = add_with_carry(op1, !op2, true);
             assert_eq!(x, x2);
@@ -114,7 +119,7 @@ fn alu_operation(
         3 => {
             let (x, not_c) = op2.overflowing_sub(op1);
             cpsr.set_carry(!not_c);
-            cpsr.set_overflow(has_signed_overflow(op2, op1, x));
+            cpsr.set_overflow(add_has_signed_overflow(op2, op1, x));
 
             let (x2, c2, v2) = add_with_carry(op2, !op1, true);
             assert_eq!(x, x2);
@@ -127,7 +132,7 @@ fn alu_operation(
         4 | 11 => {
             let (x, c) = op1.overflowing_add(op2);
             cpsr.set_carry(c);
-            cpsr.set_overflow(has_signed_overflow(op1, op2, x));
+            cpsr.set_overflow(add_has_signed_overflow(op1, op2, x));
             x
         }
         // ADC
