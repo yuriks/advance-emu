@@ -39,20 +39,22 @@ impl Cpsr {
     flag_field!(overflow, set_overflow, 29);
 }
 
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
+enum ExecuteState {
+    PipelineRefill1,
+    PipelineRefill2,
+    FirstCycle, // for single-cycle instructions, this is the only cycle
+}
+
 struct ArmCpu {
     regs: [u32; 16],
     cpsr: Cpsr,
+    current_execute_state: ExecuteState,
 
-    // Fetch stage
+    // Fetch stage output
     f_out_instr: u32,
-    sequential_fetch: bool,
-
-    // Decode stage
+    // Decode stage output
     d_out_instr: u32,
-
-    // Execute stage
-    e_out_pc: u32,
-    refill_steps: u32,
 }
 
 fn decode_immediate(imm: u8, rotate: u8, carry_in: bool) -> (u32, bool) {
@@ -190,14 +192,10 @@ impl ArmCpu {
         ArmCpu {
             regs: [0; 16],
             cpsr: Cpsr(0),
+            current_execute_state: ExecuteState::PipelineRefill1,
 
             f_out_instr: 0xFFFFFFFF,
-            sequential_fetch: false,
-
             d_out_instr: 0xFFFFFFFF,
-
-            e_out_pc: 0,
-            refill_steps: 2,
         }
     }
 
@@ -207,6 +205,95 @@ impl ArmCpu {
         }
 
         self.step_fetch_or_single_instruction(bus);
+    }
+
+    fn step_execute_fsm(
+        &mut self,
+        bus: &Bus,
+        current_state: ExecuteState,
+        in_instr: u32,
+    ) -> ExecuteState {
+        match current_state {
+            ExecuteState::PipelineRefill1 => {
+                self.regs[PC] = self.regs[PC].wrapping_add(4);
+                ExecuteState::PipelineRefill2
+            }
+            ExecuteState::PipelineRefill2 => {
+                self.regs[PC] = self.regs[PC].wrapping_add(4);
+                ExecuteState::FirstCycle
+            }
+            ExecuteState::FirstCycle => {
+                println!("Executing {:08X}", in_instr);
+                // TODO: Handle condition
+                let decoded_instr = DecodedArmInstruction::decode_arm_instruction(in_instr);
+                match decoded_instr {
+                    DecodedArmInstruction::DataProcessingImmediate {
+                        cond,
+                        opcode,
+                        s,
+                        rn,
+                        rd,
+                        rotate,
+                        imm,
+                    } => {
+                        let (imm_value, imm_carry) =
+                            decode_immediate(imm, rotate, self.cpsr.carry());
+                        let (result, new_cpsr) = alu_operation(
+                            opcode,
+                            self.regs[rn as usize],
+                            imm_value,
+                            imm_carry,
+                            self.cpsr,
+                        );
+
+                        if rd as usize == PC {
+                            if s {
+                                unimplemented!("Handle restoring SPSR"); // TODO
+                            }
+                            unimplemented!("Handle PC writes"); // TODO
+                        } else {
+                            if s {
+                                unimplemented!("Handle flags update"); // TODO
+                            }
+
+                            match opcode {
+                                // TST, TEQ, CMP, CMN
+                                8 | 9 | 10 | 11 => (),
+                                _ => self.regs[rd as usize] = result,
+                            }
+                        }
+                    }
+                    DecodedArmInstruction::BranchImm { cond, link, offset } => {
+                        if link {
+                            self.regs[LR] = self.regs[PC].wrapping_sub(4);
+                        }
+                        // TODO: Handle faulting on bad address
+                        self.regs[PC] = self.regs[PC].wrapping_add((offset * 4) as u32);
+                        println!("Branching to PC={:0X}", self.regs[PC]);
+                        return ExecuteState::PipelineRefill1;
+                    }
+                    instr => unimplemented!("Unimplemented instruction execute: {:?}", instr),
+                }
+
+                self.regs[PC].wrapping_add(4);
+                return ExecuteState::FirstCycle;
+            }
+        }
+    }
+
+    fn bus_operation_for_state(&self, state: ExecuteState) -> Option<MemoryRequest> {
+        match state {
+            ExecuteState::PipelineRefill1
+            | ExecuteState::PipelineRefill2
+            | ExecuteState::FirstCycle => Some(MemoryRequest {
+                address: self.regs[PC],
+                width: AccessWidth::Bit32,
+                op: OperationType::Read {
+                    is_instruction: true,
+                },
+                seq: state != ExecuteState::PipelineRefill1,
+            }),
+        }
     }
 
     fn step_fetch_or_single_instruction(&mut self, bus: &Bus) {
@@ -221,78 +308,16 @@ impl ArmCpu {
 
         // Fetch stage
         println!("Fetching from PC={:X}", self.regs[PC]);
-        bus.make_request(MemoryRequest {
-            address: self.regs[PC],
-            width: AccessWidth::Bit32,
-            op: OperationType::Read {
-                is_instruction: true,
-            },
-            seq: self.sequential_fetch,
-        });
-        self.sequential_fetch = true;
+        if let Some(request) = self.bus_operation_for_state(self.current_execute_state) {
+            bus.make_request(request);
+        }
 
         // Decode stage
         self.d_out_instr = d_in_instr;
 
         // Execute stage
-        let mut new_pc = None;
-
-        if self.refill_steps > 0 {
-            // Maybe handle refill_steps with special states instead
-            println!("Skipping execute");
-            self.refill_steps -= 1;
-        } else {
-            println!("Executing {:08X}", e_in_instr);
-            // TODO: Handle condition
-            let decoded_instr = DecodedArmInstruction::decode_arm_instruction(e_in_instr);
-            match decoded_instr {
-                DecodedArmInstruction::DataProcessingImmediate {
-                    cond,
-                    opcode,
-                    s,
-                    rn,
-                    rd,
-                    rotate,
-                    imm,
-                } => {
-                    let (imm_value, imm_carry) = decode_immediate(imm, rotate, self.cpsr.carry());
-                    // TODO: Some stuff about SPSR
-                    let (result, new_cpsr) = alu_operation(
-                        opcode,
-                        self.regs[rn as usize],
-                        imm_value,
-                        imm_carry,
-                        self.cpsr,
-                    );
-
-                    // TODO: Handle flags update
-                    // TODO: Handle PC writes
-
-                    match opcode {
-                        // TST, TEQ, CMP, CMN
-                        8 | 9 | 10 | 11 => (),
-                        _ => self.regs[rd as usize] = result,
-                    }
-                }
-                DecodedArmInstruction::BranchImm { cond, link, offset } => {
-                    if link {
-                        self.regs[LR] = self.regs[PC].wrapping_sub(4);
-                    }
-                    // TODO: Handle faulting on bad address
-                    new_pc = Some(self.regs[PC].wrapping_add((offset * 4) as u32));
-                    println!("Branching to PC={:0X}", new_pc.unwrap());
-                }
-                instr => unimplemented!("Unimplemented instruction execute: {:?}", instr),
-            }
-        }
-
-        if let Some(new_pc) = new_pc {
-            self.sequential_fetch = false;
-            self.refill_steps = 2;
-            self.regs[PC] = new_pc;
-        } else {
-            self.regs[PC] = self.regs[PC].wrapping_add(4);
-        }
+        let current_state = self.current_execute_state;
+        self.current_execute_state = self.step_execute_fsm(bus, current_state, e_in_instr);
     }
 }
 
